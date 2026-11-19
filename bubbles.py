@@ -1,28 +1,4 @@
-"""Speech / thought / shout bubbles drawn onto a finished page.
-
-Bubble data (one JSON list in the node's `bubbles` input, written by the editor):
-    type  : "speech" | "thought" | "shout"
-    cx, cy: centre, as a fraction of page width / height
-    rx, ry: radius, as a fraction of page width / height
-    tx, ty: tail tip, as a fraction of page width / height
-    size  : font size, as a fraction of page height
-    text  : the text
-    lines : the text wrapped into lines (written by the editor so output matches what you saw)
-    seed  : shape variation for shout spikes
-    font  : font file name; missing = the node's font
-    rot   : turn in radians, clockwise, around the centre (custom: around the outline's centroid); the tail tip
-            and custom outline points are stored already turned, the text and body are drawn turned by rot
-    heart : what <3 in the text becomes: "outline" (default) or "fill"; ♡ is always outlined, ♥ always filled
-Custom bubble ("custom"): pts = outline points (fractions of page), smooth = curves through them.
-Icon ("icon"): one standalone decoration. kind = heart | sparkle | tremble | sweat | steam; x, y = centre
-    (fractions of page); s = size (fraction of page height); kx / ky = width / height stretch; r = turn
-    (radians, clockwise); dcolor / docolor = fill / outline (defaults per kind).
-Sound effect ("sfx"): top / bottom = edge points left to right (fractions of page); the text is stretched
-    between them. color / ocolor / ow = fill, outline colour and width; o2color / o2w = outer outline;
-    scolor / sx / sy = shadow colour and offset. Widths and offsets are fractions of the letter size.
-    seed / shake / grow = per-letter tilt and growth; ♡, ♥ or <3 in the text become heart shapes.
-    deco = decorations [{kind, x, y, s, r}] (heart, sparkle, sweat, steam, tremble; size s as a fraction of
-    page height), drawn under the letters; dcolor / docolor = heart and sparkle fill / outline.
+"""Draws the editor's bubbles, effect icons and sound effects onto a page (data format: README, "Bubble data").
 
 The geometry here is mirrored in web/speech_bubbles.js; keep both in step.
 """

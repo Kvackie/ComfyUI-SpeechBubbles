@@ -12,14 +12,29 @@ Related: [ComfyUI-PageOverlay](https://github.com/Kvackie/ComfyUI-PageOverlay) p
 
 ## Install
 
-Clone into `ComfyUI/custom_nodes` and restart ComfyUI:
+Clone into `comfyui/custom_nodes` and restart ComfyUI:
 
 ```
-cd ComfyUI/custom_nodes
+cd comfyui/custom_nodes
 git clone https://github.com/Kvackie/ComfyUI-SpeechBubbles
 ```
 
 No extra Python packages are needed.
+
+## Bubble data
+
+The editor writes the `bubbles` field as a JSON list; you only need this to edit it by hand. Positions and sizes are fractions of the page (x of its width, y and sizes of its height); turns are radians, clockwise.
+
+| `type` | Fields |
+|---|---|
+| `speech`, `thought`, `shout` | `cx, cy` centre · `rx, ry` radius · `tx, ty` tail tip · `size` font size · `text` · `lines` (wrapped text) · `seed` (shout spikes) · `rot` |
+| `custom` | as above, plus `pts` outline points and `smooth` (curves through them) |
+| `icon` | `kind` · `x, y` · `s` size · `kx, ky` stretch · `r` turn · `dcolor, docolor` fill / outline |
+| `sfx` | `text` stretched between `top` and `bottom` edge points · `color, ocolor, ow` fill / outline · `o2color, o2w` outer outline · `scolor, sx, sy` shadow · `seed, shake, grow` letter tilt and growth · `deco` decorations `[{kind, x, y, s, r}]` drawn under the letters |
+
+Any bubble can also set `font` (file name; default is the node's font) and `heart` (`outline` or `fill`: what `<3` in the text becomes; ♡ is always outlined, ♥ always filled).
+
+Icon kinds: `heart`, `sparkle`, `tremble`, `sweat`, `steam`, `note`, `puff`, `blush`, `throb`, `vein`, `droplets`, `spurt`, `spiral`, `kiss`, `exclaim`. SFX decorations use `heart`, `sparkle`, `sweat`, `steam`, `tremble`.
 
 ## Fonts
 
