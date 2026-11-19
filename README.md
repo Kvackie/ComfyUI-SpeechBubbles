@@ -23,7 +23,7 @@ No extra Python packages are needed.
 
 ## Fonts
 
-Fonts are read from the `fonts` folder (and the Windows fonts folder). Drop any `.ttf` or `.otf` file into `fonts` to use it. [Komika Text](https://www.fontsquirrel.com/fonts/Komika-Text) is a free comic font that works well. If CC Wild Words is installed it is picked as the default font.
+Fonts are read from the `fonts` folder (and the Windows fonts folder). Drop any `.ttf` or `.otf` file into `fonts` to use it. [Komika Text](https://www.fontsquirrel.com/fonts/Komika-Text) is a free comic font that works well.
 
 ## Licence
 
