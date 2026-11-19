@@ -19,7 +19,7 @@ cd comfyui/custom_nodes
 git clone https://github.com/Kvackie/ComfyUI-SpeechBubbles
 ```
 
-No extra Python packages are needed.
+Sound effects need OpenCV: ComfyUI Manager installs it from `requirements.txt`, or run `pip install -r requirements.txt` with ComfyUI's Python.
 
 ## Bubble data
 

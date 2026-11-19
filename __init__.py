@@ -11,7 +11,6 @@ from aiohttp import web
 from server import PromptServer
 
 from .bubbles import draw_bubble
-from .last_ui import remember
 
 FONT_DIRS = [os.path.join(os.path.dirname(__file__), "fonts"), os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")]
 
@@ -31,6 +30,15 @@ FONTS = list_fonts()
 _WILD = sorted((f for f in FONTS if "wildwords" in f.lower().replace(" ", "").replace("_", "").replace("-", "")),
                key=lambda f: (any(k in f.lower() for k in ("bold", "italic", "lower")), f))
 DEFAULT_FONT = next(iter(_WILD), None) or next((f for f in ("comicbd.ttf", "arialbd.ttf", "arial.ttf") if f in FONTS), next(iter(FONTS), ""))
+
+
+LAST = {}  # node id -> the page it last received, so the editor opens on it even after a cached run
+
+
+@PromptServer.instance.routes.get("/speech_bubbles/last/{uid}")
+async def get_last(request):
+    data = LAST.get(request.match_info["uid"])
+    return web.json_response(data) if data is not None else web.Response(status=404)
 
 
 @PromptServer.instance.routes.get("/speech_bubbles/font/{name}")
@@ -79,7 +87,8 @@ class SpeechBubbles:
             if i == 0:
                 preview = save_temp(page, "speechbubbles_out")
             out.append(torch.from_numpy(np.asarray(page).astype(np.float32) / 255.0))
-        remember("sb", unique_id, bg)
+        if unique_id is not None:
+            LAST[str(unique_id)] = bg
         return {"ui": {"bubble_bg": [bg], "images": [preview]}, "result": (torch.stack(out),)}
 
 

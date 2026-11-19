@@ -6,16 +6,16 @@ function liveNode(node) {
     const live = app.graph?.getNodeById?.(node.id);
     return live && live.type === node.type ? live : node;
 }
-function backup(kind, node, value) {
+function backup(node, value) {
     try {
-        localStorage.setItem(`speech_bubbles_backup:${kind}:${node.id}`, JSON.stringify({ at: Date.now(), value }));
+        localStorage.setItem(`speech_bubbles_backup:sb:${node.id}`, JSON.stringify({ at: Date.now(), value }));
     } catch {}
 }
 
 // the node's latest page from this server session (also after a cached run), else the copy saved in the workflow
-async function lastUi(kind, node, saved) {
+async function lastUi(node, saved) {
     try {
-        const r = await api.fetchApi(`/speech_bubbles/last/${kind}/${node.id}`);
+        const r = await api.fetchApi(`/speech_bubbles/last/${node.id}`);
         if (r.ok) return await r.json();
     } catch {}
     return saved;
@@ -32,6 +32,50 @@ const LINE_HEIGHT = 1.18;
 const BASELINE = 0.86;
 const SFX_STRIPS = 48;
 const strokePx = (h) => Math.max(2, Math.round(h * 0.0022));
+// starts a path along the points; closed unless close is false
+function polyPath(ctx, pts, close = true) {
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+    if (close) ctx.closePath();
+}
+const scalePts = (pts, cx, cy, sx, sy) => pts.map(([x, y]) => [cx + (x - cx) * sx, cy + (y - cy) * sy]);
+const clampSize = (v) => Math.min(0.2, Math.max(0.004, v)); // bubble font size, fraction of page height
+const clampIcon = (v) => Math.min(1, Math.max(0.003, v)); // icon size, fraction of page height
+// moves item b to its copy `from` shifted by (dx, dy) page fractions (from may be b itself); decorations follow,
+// a bubble's tail tip only when tail is set (dragging a bubble keeps the tail pointing at the speaker)
+function translate(b, from, dx, dy, tail) {
+    const mv = ([x, y]) => [x + dx, y + dy];
+    if (b.type === "custom") b.pts = from.pts.map(mv);
+    else if (b.type === "icon") {
+        b.x = from.x + dx;
+        b.y = from.y + dy;
+    } else if (b.type === "sfx") {
+        b.top = from.top.map(mv);
+        b.bottom = from.bottom.map(mv);
+    } else {
+        b.cx = from.cx + dx;
+        b.cy = from.cy + dy;
+        if (tail) {
+            b.tx = from.tx + dx;
+            b.ty = from.ty + dy;
+        }
+    }
+    (b.deco || []).forEach((d, j) => {
+        d.x = from.deco[j].x + dx;
+        d.y = from.deco[j].y + dy;
+    });
+}
+// scales a sound effect (copy `from`, may be b itself) around (cx, cy); decoration sizes times ds
+function scaleSfx(b, from, cx, cy, sx, sy, ds) {
+    b.top = scalePts(from.top, cx, cy, sx, sy);
+    b.bottom = scalePts(from.bottom, cx, cy, sx, sy);
+    (b.deco || []).forEach((d, j) => {
+        const d0 = from.deco[j];
+        d.x = cx + (d0.x - cx) * sx;
+        d.y = cy + (d0.y - cy) * sy;
+        d.s = d0.s * ds;
+    });
+}
 
 const SFX_PRESETS = {
     Classic: { color: "#000000", ocolor: "#FFFFFF", ow: 0.08, o2color: "#000000", o2w: 0, scolor: "#000000", sx: 0, sy: 0 },
@@ -149,24 +193,32 @@ function unturned(b, w, h) { // the bubble before its turn (page fractions)
 
 // ---- hearts in bubble text (mirrored in bubbles.py): <3 follows the bubble's heart mode, ♡ outlined, ♥ filled
 const HEART_ADV = 0.9;
-function textRuns(line, mode) {
+// characters, with hearts as null: [[char | null, null | "outline" | "fill"]]
+function heartTokens(text, mode = "outline") {
     const out = [];
-    let buf = "";
-    for (let i = 0; i < line.length;) {
-        let kind = null, step = 1;
-        if (line.startsWith("<3", i)) [kind, step] = [mode === "fill" ? "fill" : "outline", 2];
-        else if (line[i] === "♡") kind = "outline";
-        else if (line[i] === "♥") kind = "fill";
-        if (kind) {
-            if (buf) out.push([buf, null]);
-            buf = "";
-            out.push([null, kind]);
-            i += step;
-        } else buf += line[i++];
+    for (let i = 0; i < text.length;) {
+        if (text.startsWith("<3", i)) {
+            out.push([null, mode === "fill" ? "fill" : "outline"]);
+            i += 2;
+        } else {
+            const ch = text[i++];
+            out.push(ch === "♡" ? [null, "outline"] : ch === "♥" ? [null, "fill"] : [ch, null]);
+        }
     }
-    if (buf) out.push([buf, null]);
     return out;
 }
+// text runs and hearts: [[str, null] | [null, "outline" | "fill"]]
+function textRuns(line, mode) {
+    const out = [];
+    for (const [ch, kind] of heartTokens(line, mode)) {
+        if (kind) out.push([null, kind]);
+        else if (out.length && out[out.length - 1][1] === null) out[out.length - 1][0] += ch;
+        else out.push([ch, null]);
+    }
+    return out;
+}
+// the heart outline for a letter of font size fs, centred on (cx, cy)
+const heartPath = (ctx, cx, cy, fs) => polyPath(ctx, HEART.map(([u, v]) => [cx + u * 0.8 * fs, cy + v * 0.8 * fs]));
 const hasHearts = (line) => line.includes("<3") || line.includes("♡") || line.includes("♥");
 const lineWidth = (line, mode, measure, fs) => textRuns(line, mode).reduce((s, [t]) => s + (t === null ? HEART_ADV * fs : measure(t)), 0);
 
@@ -288,15 +340,13 @@ const ICON_COLOURS = {
 const ICON_KINDS = [["heart", "Heart"], ["sparkle", "Sparkle"], ["tremble", "Tremble"], ["sweat", "Sweat"], ["steam", "Steam"],
     ["note", "Note ♪"], ["puff", "Breath puff"], ["blush", "Blush"], ["throb", "Throb"], ["vein", "Anger vein"],
     ["droplets", "Droplets"], ["spurt", "Spurt lines"], ["spiral", "Spiral"], ["kiss", "Kiss mark"], ["exclaim", "Exclamation"]];
+// [fill, outline] of a decoration: an icon's own colours, else its effect's (sweat and steam keep theirs)
 function decoColours(b, kind) {
-    if (b.type === "icon") {
-        const d = ICON_COLOURS[kind] || ICON_COLOURS.heart;
-        return [b.dcolor || d[0], b.docolor || d[1]];
-    }
-    if (kind === "tremble") return [b.color || "#000000", b.ocolor || "#FFFFFF"];
-    if (kind === "sweat") return ["#CFEAFF", "#22303C"];
-    if (kind === "steam") return ["#FFFFFF", "#6B6B6B"];
-    return [b.dcolor || "#FF5C9A", b.docolor || "#000000"];
+    const [f, o] = ICON_COLOURS[kind] || ICON_COLOURS.heart;
+    if (b.type === "icon") return [b.dcolor || f, b.docolor || o];
+    if (kind === "sweat" || kind === "steam") return [f, o];
+    if (kind === "tremble") return [b.color || f, b.ocolor || o];
+    return [b.dcolor || ICON_COLOURS.heart[0], b.docolor || ICON_COLOURS.heart[1]];
 }
 function placeShape(item, pts, w, h) { // kx / ky stretch an icon along its own width / height
     const s = (item.s ?? 0.02) * h, r = item.r ?? 0, cs = Math.cos(r), sn = Math.sin(r), cx = item.x * w, cy = item.y * h;
@@ -319,10 +369,7 @@ function drawDeco(ctx, b, item, w, h) {
     ctx.lineJoin = "round";
     ctx.lineCap = "round";
     for (const p of polys) {
-        const q = placeShape(item, p, w, h);
-        ctx.beginPath();
-        q.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.closePath();
+        polyPath(ctx, placeShape(item, p, w, h));
         ctx.lineWidth = 2 * ow;
         ctx.strokeStyle = outline;
         ctx.stroke();
@@ -331,9 +378,7 @@ function drawDeco(ctx, b, item, w, h) {
     }
     for (const [width, col] of [[lw * s + 2 * ow, outline], [lw * s, fill]]) {
         for (const l of lines) {
-            const q = placeShape(item, l, w, h);
-            ctx.beginPath();
-            q.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+            polyPath(ctx, placeShape(item, l, w, h), false);
             ctx.lineWidth = width;
             ctx.strokeStyle = col;
             ctx.stroke();
@@ -342,21 +387,9 @@ function drawDeco(ctx, b, item, w, h) {
 }
 
 // ---- sound-effect text, letter by letter (tilt, growth, inline hearts); mirrored in bubbles.py
-function sfxTokens(text) {
-    const out = [];
-    for (let i = 0; i < text.length;) {
-        if (text.startsWith("<3", i)) {
-            out.push(null);
-            i += 2;
-        } else if ("♡♥".includes(text[i])) {
-            out.push(null);
-            i += 1;
-        } else out.push(text[i++]);
-    }
-    return out;
-}
+const sfxText = (b) => String(b.text ?? "").split(/\s+/).filter(Boolean).join(" "); // whitespace runs collapsed
 function sfxLayout(b, size, measure) {
-    const toks = sfxTokens(String(b.text ?? "").split(/\s+/).filter(Boolean).join(" "));
+    const toks = heartTokens(sfxText(b)).map(([ch]) => ch);
     const shake = b.shake ?? 0, grow = b.grow ?? 0, rnd = rng(b.seed ?? 1), n = toks.length, out = [];
     let x = 0;
     toks.forEach((tk, i) => {
@@ -370,7 +403,7 @@ function sfxLayout(b, size, measure) {
 }
 const textCache = new Map();
 function sfxTextCanvas(b, family, size) {
-    const text = String(b.text ?? "").split(/\s+/).filter(Boolean).join(" ");
+    const text = sfxText(b);
     if (!text) return null;
     const key = JSON.stringify([text, family, size, b.ow, b.o2w, b.sx, b.sy, b.color, b.ocolor, b.o2color, b.scolor, b.shake, b.grow, b.seed]);
     if (textCache.has(key)) return textCache.get(key);
@@ -405,9 +438,7 @@ function sfxTextCanvas(b, family, size) {
             g.strokeStyle = scol;
             g.fillStyle = doFill && fill ? fill : scol;
             if (tk === null) {
-                g.beginPath();
-                HEART.forEach(([u, v], i) => (i ? g.lineTo(u * 0.8 * fs, v * 0.8 * fs) : g.moveTo(u * 0.8 * fs, v * 0.8 * fs)));
-                g.closePath();
+                heartPath(g, 0, 0, fs);
                 if (sw > 0) g.stroke();
                 if (doFill) g.fill();
             } else {
@@ -495,9 +526,7 @@ function drawSfx(ctx, b, w, h, family) {
             return [p[0] + (vx / L) * 0.75, p[1] + (vy / L) * 0.75];
         };
         ctx.save();
-        ctx.beginPath();
-        d.map(grow).forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.closePath();
+        polyPath(ctx, d.map(grow));
         ctx.clip();
         ctx.transform(...affine(s, d));
         ctx.drawImage(src, 0, 0);
@@ -561,9 +590,7 @@ function drawLevel(ctx, orig, b, w, h, family) {
             ctx.fill();
         }
         for (const poly of polys) {
-            ctx.beginPath();
-            poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-            ctx.closePath();
+            polyPath(ctx, poly);
             ctx.fill();
             if (grow) {
                 ctx.lineWidth = 2 * s;
@@ -597,10 +624,7 @@ function drawLevel(ctx, orig, b, w, h, family) {
                 x += measure(t);
                 continue;
             }
-            const hx = x + (HEART_ADV * fs) / 2, hy = base - 0.35 * fs;
-            ctx.beginPath();
-            HEART.forEach(([u, v], j) => (j ? ctx.lineTo(hx + u * 0.8 * fs, hy + v * 0.8 * fs) : ctx.moveTo(hx + u * 0.8 * fs, hy + v * 0.8 * fs)));
-            ctx.closePath();
+            heartPath(ctx, x + (HEART_ADV * fs) / 2, base - 0.35 * fs, fs);
             if (kind === "fill") ctx.fill();
             else {
                 ctx.lineWidth = Math.max(1, 0.09 * fs);
@@ -661,7 +685,7 @@ const ON = "#2d5a8a";
 const LABEL = "font:13px sans-serif;color:#bbb;white-space:nowrap;";
 
 async function openEditor(node) {
-    const bg = await lastUi("sb", node, node.properties?.sb_bg);
+    const bg = await lastUi(node, node.properties?.sb_bg);
     if (!bg) {
         alert("Run the workflow once so the page exists.");
         return;
@@ -996,25 +1020,17 @@ async function openEditor(node) {
         const b = bubbles[sel];
         if (!b) return;
         if (b.type === "icon") {
-            b.s = Math.min(1, Math.max(0.003, b.s * f));
+            b.s = clampIcon(b.s * f);
             draw();
             return;
         }
         if (b.type === "sfx") { // letters follow the shape, so scale the whole effect (and its decorations) around its centre
             const reg = sfxRegion(b, 1, 1), xs = reg.map((p) => p[0]), ys = reg.map((p) => p[1]);
-            const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-            const sc = (arr) => arr.map(([x, y]) => [cx + (x - cx) * f, cy + (y - cy) * f]);
-            b.top = sc(b.top);
-            b.bottom = sc(b.bottom);
-            (b.deco || []).forEach((d) => {
-                d.x = cx + (d.x - cx) * f;
-                d.y = cy + (d.y - cy) * f;
-                d.s *= f;
-            });
+            scaleSfx(b, b, (Math.min(...xs) + Math.max(...xs)) / 2, (Math.min(...ys) + Math.max(...ys)) / 2, f, f, f);
             draw();
             return;
         }
-        b.size = Math.min(0.2, Math.max(0.004, (b.size ?? 0.018) * f));
+        b.size = clampSize((b.size ?? 0.018) * f);
         lastSize = b.size;
         draw();
     };
@@ -1091,11 +1107,7 @@ async function openEditor(node) {
         ctx.fillStyle = on ? "#ff5533" : "#2ec4ff";
         ctx.fill();
     };
-    const pathOf = (poly) => {
-        ctx.beginPath();
-        poly.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.closePath();
-    };
+    const pathOf = (poly) => polyPath(ctx, poly);
     // redraws are coalesced to one per frame, so sliders and colour pickers don't queue up full renders
     let drawPending = false;
     const draw = () => {
@@ -1322,19 +1334,6 @@ async function openEditor(node) {
         for (let i = bubbles.length - 1; i >= 0; i--) if (inside(bubbles[i], x, y)) return { i, mode: "move" };
         return null;
     };
-    const shift = (b, dx, dy, from) => { // move a whole bubble by (dx, dy) page fractions from its drag-start copy
-        if (b.type === "custom") b.pts = from.pts.map(([x, y]) => [x + dx, y + dy]);
-        else if (b.type === "icon") {
-            b.x = from.x + dx;
-            b.y = from.y + dy;
-        } else if (b.type === "sfx") {
-            b.top = from.top.map(([x, y]) => [x + dx, y + dy]);
-            b.bottom = from.bottom.map(([x, y]) => [x + dx, y + dy]);
-        } else {
-            b.cx = from.cx + dx;
-            b.cy = from.cy + dy;
-        }
-    };
     let drag = null;
     canvas.onpointerdown = (e) => {
         if (document.activeElement !== overlay) overlay.focus(); // keys (Delete, Ctrl+C / V) go to the page again after typing
@@ -1387,13 +1386,7 @@ async function openEditor(node) {
             const d0 = drag.from.deco[drag.j];
             b.deco[drag.j].x = d0.x + (x - drag.x) / W;
             b.deco[drag.j].y = d0.y + (y - drag.y) / H;
-        } else if (drag.mode === "move") {
-            shift(b, (x - drag.x) / W, (y - drag.y) / H, drag.from);
-            (b.deco || []).forEach((d, j) => { // decorations travel with their effect
-                d.x = drag.from.deco[j].x + (x - drag.x) / W;
-                d.y = drag.from.deco[j].y + (y - drag.y) / H;
-            });
-        }
+        } else if (drag.mode === "move") translate(b, drag.from, (x - drag.x) / W, (y - drag.y) / H, false);
         else if (drag.mode.startsWith("scale")) {
             // corner: whole shape, text and decorations keep their form; side handles: width or height only,
             // text and decoration sizes stay (custom text re-wraps to the new width)
@@ -1402,29 +1395,19 @@ async function openEditor(node) {
             const sx = uni ? s : drag.mode === "scaleX" ? Math.max(0.05, Math.abs(x - drag.c[0]) / drag.dx0) : 1;
             const sy = uni ? s : drag.mode === "scaleY" ? Math.max(0.05, Math.abs(y - drag.c[1]) / drag.dy0) : 1;
             const cx = drag.c[0] / W, cy = drag.c[1] / H, f = drag.from;
-            const sc = (arr) => arr.map(([px, py]) => [cx + (px - cx) * sx, cy + (py - cy) * sy]);
             if (b.type === "icon") { // corner: size; side bars: the icon's own width / height
-                if (uni) b.s = Math.min(1, Math.max(0.003, f.s * s));
+                if (uni) b.s = clampIcon(f.s * s);
                 else {
                     b.kx = Math.max(0.05, (f.kx ?? 1) * sx);
                     b.ky = Math.max(0.05, (f.ky ?? 1) * sy);
                 }
             } else if (b.type === "custom") {
-                b.pts = sc(f.pts);
+                b.pts = scalePts(f.pts, cx, cy, sx, sy);
                 if (uni) {
-                    b.size = Math.min(0.2, Math.max(0.004, (f.size ?? 0.018) * s));
+                    b.size = clampSize((f.size ?? 0.018) * s);
                     lastSize = b.size;
                 }
-            } else {
-                b.top = sc(f.top);
-                b.bottom = sc(f.bottom);
-                (b.deco || []).forEach((d, j) => {
-                    const d0 = f.deco[j];
-                    d.x = cx + (d0.x - cx) * sx;
-                    d.y = cy + (d0.y - cy) * sy;
-                    d.s = uni ? d0.s * s : d0.s;
-                });
-            }
+            } else scaleSfx(b, f, cx, cy, sx, sy, uni ? s : 1);
         }
         else if (drag.mode === "rotate") { // Shift: 15° steps
             let da = Math.atan2(y - drag.c[1], x - drag.c[0]) - drag.a0;
@@ -1493,7 +1476,7 @@ async function openEditor(node) {
         if ((e.ctrlKey || e.metaKey) && k === "v" && sbClipboard) { // paste a copy, nudged so it doesn't hide the original
             const b = JSON.parse(JSON.stringify(sbClipboard));
             const d = 0.03 * Math.min(W, H);
-            nudge(b, d / W, d / H);
+            translate(b, b, d / W, d / H, true);
             bubbles.push(b);
             sbClipboard = JSON.parse(JSON.stringify(b)); // the next paste steps on again
             sel = bubbles.length - 1;
@@ -1501,23 +1484,6 @@ async function openEditor(node) {
             selDeco = -1;
             sync();
             e.preventDefault();
-        }
-    };
-    const nudge = (b, dx, dy) => { // move any item by page fractions (tail, points, decorations included)
-        const mv = ([x, y]) => [x + dx, y + dy];
-        if (b.type === "custom") b.pts = b.pts.map(mv);
-        else if (b.type === "sfx") {
-            b.top = b.top.map(mv);
-            b.bottom = b.bottom.map(mv);
-            (b.deco || []).forEach((d) => { d.x += dx; d.y += dy; });
-        } else if (b.type === "icon") {
-            b.x += dx;
-            b.y += dy;
-        } else {
-            b.cx += dx;
-            b.cy += dy;
-            b.tx += dx;
-            b.ty += dy;
         }
     };
     overlay.addEventListener("keydown", onKey);
@@ -1556,7 +1522,7 @@ async function openEditor(node) {
                 };
             }));
             dataWLive.callback?.(dataWLive.value);
-            backup("sb", target, dataWLive.value);
+            backup(target, dataWLive.value);
             target.setDirtyCanvas(true, true);
             app.graph?.setDirtyCanvas?.(true, true);
             track();

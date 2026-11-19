@@ -16,6 +16,28 @@ def stroke_px(h):
     return max(2, round(h * 0.0022))
 
 
+def layer_box(xs, ys, pad):
+    """Whole-pixel box (x0, y0, x1, y1) around the points, grown by pad."""
+    return math.floor(min(xs) - pad), math.floor(min(ys) - pad), math.ceil(max(xs) + pad), math.ceil(max(ys) + pad)
+
+
+def ss_layer(x0, y0, x1, y1):
+    """A transparent layer for the box, SS times larger for smooth edges."""
+    return Image.new("RGBA", ((x1 - x0) * SS, (y1 - y0) * SS), (0, 0, 0, 0))
+
+
+def paste_layer(page, layer, x0, y0, size=None):
+    """Pastes an RGBA layer onto the page at (x0, y0); size shrinks a supersampled layer first."""
+    if size:
+        layer = layer.resize(size, Image.LANCZOS)
+    page.paste(layer.convert("RGB"), (x0, y0), layer.getchannel("A"))
+
+
+def heart_points(cx, cy, fs):
+    """The heart outline for a letter of font size fs, centred on (cx, cy)."""
+    return [(cx + u * 0.8 * fs, cy + v * 0.8 * fs) for u, v in HEART]
+
+
 class Rng:
     """Park-Miller; same sequence as the editor."""
 
@@ -151,28 +173,31 @@ def unturned(b, w, h):
 HEART_ADV = 0.9  # heart width, as a fraction of the font size
 
 
+def heart_tokens(text, mode="outline"):
+    """Characters, with hearts as None: [(char | None, None | "outline" | "fill")].
+    <3 follows `mode`, ♡ is always outlined, ♥ always filled."""
+    out, i = [], 0
+    while i < len(text):
+        if text.startswith("<3", i):
+            out.append((None, "fill" if mode == "fill" else "outline"))
+            i += 2
+        else:
+            ch = text[i]
+            out.append((None, "outline") if ch == "♡" else (None, "fill") if ch == "♥" else (ch, None))
+            i += 1
+    return out
+
+
 def text_runs(line, mode):
     """Splits a line into text runs and hearts: [(str, None) | (None, "outline" | "fill")]."""
-    out, buf, i = [], "", 0
-    while i < len(line):
-        kind = None
-        if line.startswith("<3", i):
-            kind, step = ("fill" if mode == "fill" else "outline"), 2
-        elif line[i] == "♡":
-            kind, step = "outline", 1
-        elif line[i] == "♥":
-            kind, step = "fill", 1
+    out = []
+    for ch, kind in heart_tokens(line, mode):
         if kind:
-            if buf:
-                out.append((buf, None))
-                buf = ""
             out.append((None, kind))
-            i += step
+        elif out and out[-1][1] is None:
+            out[-1] = (out[-1][0] + ch, None)
         else:
-            buf += line[i]
-            i += 1
-    if buf:
-        out.append((buf, None))
+            out.append((ch, None))
     return out
 
 
@@ -208,14 +233,12 @@ def draw_bubble(page, b, font_path):
         text_w = 2 * b["rx"] * w * TEXT_WIDTH.get(b.get("type", "speech"), 0.72)
     xs = [c[0] - c[2] for c in circles] + [c[0] + c[2] for c in circles] + [p[0] for poly in polys for p in poly]
     ys = [c[1] - c[3] for c in circles] + [c[1] + c[3] for c in circles] + [p[1] for poly in polys for p in poly]
-    pad = 2 * s + 4
-    x0, y0 = math.floor(min(xs)) - pad, math.floor(min(ys)) - pad
-    x1, y1 = math.ceil(max(xs)) + pad, math.ceil(max(ys)) + pad
+    x0, y0, x1, y1 = layer_box(xs, ys, 2 * s + 4)
     if rot:  # a square around the pivot that holds the bubble at any angle
         R = math.ceil(max(math.dist(pivot, (x, y)) for x in (x0, x1) for y in (y0, y1))) + 2
         x0, y0 = math.floor(pivot[0]) - R, math.floor(pivot[1]) - R
         x1, y1 = x0 + 2 * R + 2, y0 + 2 * R + 2
-    layer = Image.new("RGBA", ((x1 - x0) * SS, (y1 - y0) * SS), (0, 0, 0, 0))
+    layer = ss_layer(x0, y0, x1, y1)
     d = ImageDraw.Draw(layer)
 
     def P(x, y):
@@ -244,7 +267,6 @@ def draw_bubble(page, b, font_path):
         lines = wrap(b.get("text", ""), lambda t: line_width(t, mode, measure, fs), text_w)
     lh = LINE_HEIGHT * fs
     top = tcy - len(lines) * lh / 2
-    heart = heart_shape()
     for i, line in enumerate(lines):
         if not line:
             continue
@@ -258,8 +280,7 @@ def draw_bubble(page, b, font_path):
                 d.text(P(x, base), t, font=font, fill=black, anchor="ls")
                 x += measure(t)
                 continue
-            hx, hy = x + HEART_ADV * fs / 2, base - 0.35 * fs
-            q = [P(hx + u * 0.8 * fs, hy + v * 0.8 * fs) for u, v in heart]
+            q = [P(*p) for p in heart_points(x + HEART_ADV * fs / 2, base - 0.35 * fs, fs)]
             if kind == "fill":
                 d.polygon(q, fill=black)
             else:
@@ -268,8 +289,7 @@ def draw_bubble(page, b, font_path):
 
     if rot:
         layer = layer.rotate(-math.degrees(rot), resample=Image.BICUBIC, center=P(*pivot))
-    layer = layer.resize((x1 - x0, y1 - y0), Image.LANCZOS)
-    page.paste(layer.convert("RGB"), (x0, y0), layer.getchannel("A"))
+    paste_layer(page, layer, x0, y0, (x1 - x0, y1 - y0))
 
 
 # ---------------------------------------------------------------- sound effects
@@ -323,6 +343,9 @@ def heart_shape(n=48):
         t = 2 * math.pi * i / n
         pts.append((16 * math.sin(t) ** 3, -(13 * math.cos(t) - 5 * math.cos(2 * t) - 2 * math.cos(3 * t) - math.cos(4 * t))))
     return _centre(pts)
+
+
+HEART = heart_shape()
 
 
 def deco_shapes(kind):
@@ -388,12 +411,6 @@ def deco_shapes(kind):
     return [], [], 0.0
 
 
-DECO_COLOURS = {  # (fill, outline); None = take it from the effect
-    "heart": (None, None), "sparkle": (None, None),
-    "sweat": ("#CFEAFF", "#22303C"), "steam": ("#FFFFFF", "#6B6B6B"), "tremble": (None, None),
-}
-
-
 ICON_COLOURS = {  # standalone icons: default (fill, outline) per kind; mirrored in web/speech_bubbles.js
     "heart": ("#FF5C9A", "#000000"), "sparkle": ("#FF5C9A", "#000000"), "tremble": ("#000000", "#FFFFFF"),
     "sweat": ("#CFEAFF", "#22303C"), "steam": ("#FFFFFF", "#6B6B6B"),
@@ -405,13 +422,16 @@ ICON_COLOURS = {  # standalone icons: default (fill, outline) per kind; mirrored
 
 
 def deco_colours(b, kind):
+    """(fill, outline) of a decoration: an icon's own colours, else its effect's (sweat and steam keep theirs)."""
+    f, o = ICON_COLOURS.get(kind, ICON_COLOURS["heart"])
     if b.get("type") == "icon":
-        f, o = ICON_COLOURS.get(kind, ICON_COLOURS["heart"])
         return b.get("dcolor") or f, b.get("docolor") or o
-    f, o = DECO_COLOURS.get(kind, (None, None))
+    if kind in ("sweat", "steam"):
+        return f, o
     if kind == "tremble":
-        return b.get("color") or "#000000", b.get("ocolor") or "#FFFFFF"
-    return f or b.get("dcolor") or "#FF5C9A", o or b.get("docolor") or "#000000"
+        return b.get("color") or f, b.get("ocolor") or o
+    f, o = ICON_COLOURS["heart"]
+    return b.get("dcolor") or f, b.get("docolor") or o
 
 
 def place(item, pts, w, h):
@@ -433,10 +453,8 @@ def draw_deco(page, b, item):
     P = [place(item, p, w, h) for p in polys]
     Ls = [place(item, l, w, h) for l in lines]
     pts = [q for p in P + Ls for q in p]
-    pad = ow + lw * s + 4
-    x0, y0 = math.floor(min(p[0] for p in pts) - pad), math.floor(min(p[1] for p in pts) - pad)
-    x1, y1 = math.ceil(max(p[0] for p in pts) + pad), math.ceil(max(p[1] for p in pts) + pad)
-    layer = Image.new("RGBA", ((x1 - x0) * SS, (y1 - y0) * SS), (0, 0, 0, 0))
+    x0, y0, x1, y1 = layer_box([p[0] for p in pts], [p[1] for p in pts], ow + lw * s + 4)
+    layer = ss_layer(x0, y0, x1, y1)
     d = ImageDraw.Draw(layer)
     T = lambda poly: [((x - x0) * SS, (y - y0) * SS) for x, y in poly]
     for p in P:
@@ -448,30 +466,18 @@ def draw_deco(page, b, item):
         d.line(q, fill=hex_rgba(outline, "#FFFFFF"), width=max(1, round((lw * s + 2 * ow) * SS)), joint="curve")
     for l in Ls:
         d.line(T(l), fill=hex_rgba(fill, "#000000"), width=max(1, round(lw * s * SS)), joint="curve")
-    layer = layer.resize((x1 - x0, y1 - y0), Image.LANCZOS)
-    page.paste(layer.convert("RGB"), (x0, y0), layer.getchannel("A"))
+    paste_layer(page, layer, x0, y0, (x1 - x0, y1 - y0))
 
 
 # ---------------------------------------------------------------- sound-effect text
-def sfx_tokens(text):
-    """Characters, with ♡ / ♥ / <3 turned into heart tokens."""
-    out, i = [], 0
-    while i < len(text):
-        if text.startswith("<3", i):
-            out.append(None)
-            i += 2
-        elif text[i] in "♡♥":
-            out.append(None)
-            i += 1
-        else:
-            out.append(text[i])
-            i += 1
-    return out
+def sfx_text(b):
+    """The effect's text with runs of whitespace collapsed to single spaces."""
+    return " ".join(str(b.get("text", "")).split())
 
 
 def sfx_layout(b, size, measure):
-    """Per-letter (token, font size, x, advance, rotation, y offset). measure(ch, fs) -> advance."""
-    toks = sfx_tokens(" ".join(str(b.get("text", "")).split()))
+    """Per-letter (token, font size, x, advance, rotation, y offset); hearts are None. measure(ch, fs) -> advance."""
+    toks = [ch for ch, _ in heart_tokens(sfx_text(b))]
     shake, grow = float(b.get("shake", 0)), float(b.get("grow", 0))
     rnd, n, x, out = Rng(b.get("seed", 1)), len(toks), 0.0, []
     for i, tk in enumerate(toks):
@@ -486,8 +492,7 @@ def sfx_layout(b, size, measure):
 
 def sfx_text_image(b, font_path, size):
     """The flat text with its effects (shadow, outer outline, outline, fill), cropped to the ink."""
-    text = " ".join(str(b.get("text", "")).split())
-    if not text:
+    if not sfx_text(b):
         return None
     fonts = {}
     font = lambda fs: fonts.setdefault(fs, ImageFont.truetype(font_path, fs))
@@ -500,8 +505,7 @@ def sfx_text_image(b, font_path, size):
     margin = int(outer + 0.5 * maxfs + abs(dx) + abs(dy) + 4)
     im = Image.new("RGBA", (int(total + 2 * margin), int(maxfs * 1.7 + 2 * margin)), (0, 0, 0, 0))
     base = margin + maxfs * 1.15
-    heart = heart_shape()
-    col = lambda key, dflt: hex_rgba(b.get(key), dflt)
+    col =lambda key, dflt: hex_rgba(b.get(key), dflt)
     passes = []
     if dx or dy:
         passes.append((col("scolor", "#000000"), outer, col("scolor", "#000000"), dx, dy, True))
@@ -517,7 +521,7 @@ def sfx_text_image(b, font_path, size):
             tile = Image.new("RGBA", (T, T), (0, 0, 0, 0))
             d = ImageDraw.Draw(tile)
             if tk is None:
-                q = [(T / 2 + u * 0.8 * fs, T / 2 + v * 0.8 * fs) for u, v in heart]
+                q = heart_points(T / 2, T / 2, fs)
                 if sw > 0:
                     d.line(q + [q[0]], fill=scol, width=2 * sw, joint="curve")
                 if do_fill:
@@ -571,5 +575,4 @@ def draw_sfx(page, b, font_path):
         map_x[m] = A[0, 0] * gx[m] + A[0, 1] * gy[m] + A[0, 2]
         map_y[m] = A[1, 0] * gx[m] + A[1, 1] * gy[m] + A[1, 2]
     warped = cv2.remap(np.asarray(src), map_x, map_y, cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT, borderValue=(0, 0, 0, 0))
-    layer = Image.fromarray(warped, "RGBA")
-    page.paste(layer.convert("RGB"), (x0, y0), layer.getchannel("A"))
+    paste_layer(page, Image.fromarray(warped, "RGBA"), x0, y0)
