@@ -12,8 +12,6 @@ from server import PromptServer
 
 from .bubbles import draw_bubble
 from .last_ui import remember
-from .panel_fit import PanelFit
-from .page_overlay import PageOverlay
 
 FONT_DIRS = [os.path.join(os.path.dirname(__file__), "fonts"), os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "Fonts")]
 
@@ -85,7 +83,7 @@ class SpeechBubbles:
         return {"ui": {"bubble_bg": [bg], "images": [preview]}, "result": (torch.stack(out),)}
 
 
-NODE_CLASS_MAPPINGS = {"SpeechBubbles": SpeechBubbles, "PanelFit": PanelFit, "PageOverlay": PageOverlay}
-NODE_DISPLAY_NAME_MAPPINGS = {"SpeechBubbles": "Speech Bubbles", "PanelFit": "Panel Fit", "PageOverlay": "Page Overlay"}
+NODE_CLASS_MAPPINGS = {"SpeechBubbles": SpeechBubbles}
+NODE_DISPLAY_NAME_MAPPINGS = {"SpeechBubbles": "Speech Bubbles"}
 WEB_DIRECTORY = "web"
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]

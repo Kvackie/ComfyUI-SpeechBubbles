@@ -1,4 +1,4 @@
-"""The latest editor data (page / panel images) each node produced in this server session.
+"""The latest page image each Speech Bubbles node received in this server session.
 
 A node's editor opens on what the node last made, even when the run was cached (a cached node sends nothing
 to the browser) or the browser restored an older copy of the workflow.
